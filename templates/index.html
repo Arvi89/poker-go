@@ -1,0 +1,127 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Poker Planning</title>
+    <link rel="stylesheet" href="/static/css/styles.css">
+</head>
+<body>
+    <div class="container">
+        <header>
+            <h1>Poker Planning</h1>
+        </header>
+
+        <main>
+            <!-- Home Screen -->
+            <div id="home-screen">
+                <div class="card">
+                    <h2>Create a New Room</h2>
+                    <form id="create-room-form">
+                        <div class="form-group">
+                            <label for="creator-name">Your Name:</label>
+                            <input type="text" id="creator-name" required>
+                        </div>
+                        <button type="submit" class="btn primary">Create Room</button>
+                    </form>
+                </div>
+
+                <div class="card">
+                    <h2>Join Existing Room</h2>
+                    <form id="join-room-form">
+                        <div class="form-group">
+                            <label for="player-name">Your Name:</label>
+                            <input type="text" id="player-name" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="room-id">Room ID:</label>
+                            <input type="text" id="room-id" required>
+                        </div>
+                        <button type="submit" class="btn primary">Join Room</button>
+                    </form>
+                </div>
+            </div>
+
+            <!-- Room Screen (Hidden initially) -->
+            <div id="room-screen" class="hidden">
+                <div class="room-header">
+                    <h2>Room: <span id="room-id-display"></span></h2>
+                    <div class="room-actions">
+                        <button id="share-room" class="btn secondary">Share Room</button>
+                        <button id="leave-room" class="btn secondary">Leave Room</button>
+                        <button id="toggle-history" class="btn secondary">Show History</button>
+                    </div>
+                </div>
+
+                <div class="main-content">
+                    <div class="content-area">
+                        <div class="voting-status">
+                            <div class="status-container">
+                                <span id="status-text">Voting in progress...</span>
+                                <div id="session-link-display" class="session-link-display hidden">
+                                    <span>Session link: </span>
+                                    <a id="session-link-anchor" href="#" target="_blank" rel="noopener noreferrer"></a>
+                                </div>
+                            </div>
+                            <div id="creator-controls" class="hidden">
+                                <div class="creator-controls-row">
+                                    <div class="link-control">
+                                        <input type="text" id="session-link" placeholder="Add a link for this session">
+                                        <button id="update-link" class="btn secondary">Update</button>
+                                    </div>
+                                    <div class="reveal-container">
+                                        <button id="reveal-cards" class="btn primary">Reveal Cards</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="table">
+                            <div id="players-container">
+                                <!-- Players will be added here dynamically -->
+                            </div>
+                        </div>
+
+                        <div id="card-selection">
+                            <h3>Select your card:</h3>
+                            <div class="cards">
+                                <button class="card-btn" data-value="0">0</button>
+                                <button class="card-btn" data-value="1">1</button>
+                                <button class="card-btn" data-value="2">2</button>
+                                <button class="card-btn" data-value="3">3</button>
+                                <button class="card-btn" data-value="5">5</button>
+                                <button class="card-btn" data-value="8">8</button>
+                                <button class="card-btn" data-value="13">13</button>
+                                <button class="card-btn" data-value="20">20</button>
+                                <button class="card-btn" data-value="40">40</button>
+                                <button class="card-btn" data-value="100">100</button>
+                                <button class="card-btn" data-value="?">?</button>
+                                <button class="card-btn" data-value="coffee">☕</button>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <div id="history-panel" class="history-panel hidden">
+                        <div class="history-header">
+                            <h3>Voting History</h3>
+                            <button id="close-history" class="btn-icon">×</button>
+                        </div>
+                        <div id="vote-history" class="vote-history">
+                            <!-- Vote history will be added here dynamically -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <footer>
+            <p>&copy; 2025 Poker Planning</p>
+        </footer>
+    </div>
+
+    <!-- Notification container -->
+    <div id="notification" class="hidden"></div>
+
+    <script src="/static/js/app.js"></script>
+</body>
+</html> 
