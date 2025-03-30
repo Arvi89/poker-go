@@ -31,11 +31,11 @@ func main() {
 		config.AllowAllOrigins = false
 	} else {
 		// Default origins in development
-		config.AllowOrigins = []string{"http://localhost:8080", "https://localhost:8080"}
-		config.AllowAllOrigins = false
+		config.AllowOrigins = []string{"*"}
+		config.AllowAllOrigins = true
 	}
 
-	config.AllowMethods = []string{"GET", "POST", "PUT", "DELETE", "OPTIONS"}
+	config.AllowMethods = []string{"GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"}
 	config.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
 	config.AllowCredentials = true
 	config.MaxAge = 12 * time.Hour
