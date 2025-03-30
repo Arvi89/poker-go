@@ -39,7 +39,22 @@ func (h *RoomHandler) CreateRoom(c *gin.Context) {
 	}
 
 	room := h.store.CreateRoom(req.Name)
-	c.JSON(http.StatusCreated, gin.H{"roomId": room.ID})
+
+	// Find the creator player ID
+	var creatorID string
+	room.Mutex.RLock()
+	for id, player := range room.Players {
+		if player.IsCreator {
+			creatorID = id
+			break
+		}
+	}
+	room.Mutex.RUnlock()
+
+	c.JSON(http.StatusCreated, gin.H{
+		"roomId":   room.ID,
+		"playerID": creatorID,
+	})
 }
 
 // JoinRoom handles requests to join a room
@@ -66,21 +81,22 @@ func (h *RoomHandler) JoinRoom(c *gin.Context) {
 		return
 	}
 
-	if success := room.AddPlayer(req.Name); !success {
+	playerID, success := room.AddPlayer(req.Name)
+	if !success {
 		c.JSON(http.StatusConflict, gin.H{"error": models.ErrPlayerExists.Error()})
 		return
 	}
 
-	c.JSON(http.StatusOK, gin.H{"status": "joined"})
+	c.JSON(http.StatusOK, gin.H{"status": "joined", "playerID": playerID})
 }
 
 // LeaveRoom handles requests to leave a room
 func (h *RoomHandler) LeaveRoom(c *gin.Context) {
 	roomID := c.Param("id")
-	playerName := c.Query("name")
+	playerID := c.Query("playerID")
 
-	if playerName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": models.ErrInvalidPlayerName.Error()})
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
 		return
 	}
 
@@ -90,7 +106,7 @@ func (h *RoomHandler) LeaveRoom(c *gin.Context) {
 		return
 	}
 
-	if success := room.RemovePlayer(playerName); !success {
+	if success := room.RemovePlayer(playerID); !success {
 		c.JSON(http.StatusNotFound, gin.H{"error": models.ErrPlayerNotFound.Error()})
 		return
 	}
@@ -110,16 +126,26 @@ func (h *RoomHandler) LeaveRoom(c *gin.Context) {
 // GetRoom handles requests to get room information
 func (h *RoomHandler) GetRoom(c *gin.Context) {
 	roomID := c.Param("id")
-	playerName := c.Query("name")
+	playerID := c.Query("playerID")
 
-	if playerName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": models.ErrInvalidPlayerName.Error()})
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
 		return
 	}
 
 	room, exists := h.store.GetRoom(roomID)
 	if !exists {
 		c.JSON(http.StatusNotFound, gin.H{"error": models.ErrRoomNotFound.Error()})
+		return
+	}
+
+	// Verify player exists in the room
+	room.Mutex.RLock()
+	_, playerExists := room.Players[playerID]
+	room.Mutex.RUnlock()
+
+	if !playerExists {
+		c.JSON(http.StatusForbidden, gin.H{"error": models.ErrPlayerNotFound.Error()})
 		return
 	}
 
@@ -130,8 +156,8 @@ func (h *RoomHandler) GetRoom(c *gin.Context) {
 func (h *RoomHandler) SubmitVote(c *gin.Context) {
 	roomID := c.Param("id")
 	var req struct {
-		Name string      `json:"name" binding:"required"`
-		Card models.Card `json:"card" binding:"required"`
+		PlayerID string      `json:"playerID" binding:"required"`
+		Card     models.Card `json:"card" binding:"required"`
 	}
 
 	if err := c.BindJSON(&req); err != nil {
@@ -145,7 +171,7 @@ func (h *RoomHandler) SubmitVote(c *gin.Context) {
 		return
 	}
 
-	if success := room.SubmitVote(req.Name, req.Card); !success {
+	if success := room.SubmitVote(req.PlayerID, req.Card); !success {
 		c.JSON(http.StatusNotFound, gin.H{"error": models.ErrPlayerNotFound.Error()})
 		return
 	}
@@ -156,10 +182,10 @@ func (h *RoomHandler) SubmitVote(c *gin.Context) {
 // RevealCards handles requests to reveal all cards
 func (h *RoomHandler) RevealCards(c *gin.Context) {
 	roomID := c.Param("id")
-	playerName := c.Query("name")
+	playerID := c.Query("playerID")
 
-	if playerName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": models.ErrInvalidPlayerName.Error()})
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
 		return
 	}
 
@@ -169,7 +195,7 @@ func (h *RoomHandler) RevealCards(c *gin.Context) {
 		return
 	}
 
-	if success := room.RevealCards(playerName); !success {
+	if success := room.RevealCards(playerID); !success {
 		c.JSON(http.StatusForbidden, gin.H{"error": models.ErrNotCreator.Error()})
 		return
 	}
@@ -180,10 +206,10 @@ func (h *RoomHandler) RevealCards(c *gin.Context) {
 // ResetVoting handles requests to reset voting
 func (h *RoomHandler) ResetVoting(c *gin.Context) {
 	roomID := c.Param("id")
-	playerName := c.Query("name")
+	playerID := c.Query("playerID")
 
-	if playerName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": models.ErrInvalidPlayerName.Error()})
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
 		return
 	}
 
@@ -193,7 +219,7 @@ func (h *RoomHandler) ResetVoting(c *gin.Context) {
 		return
 	}
 
-	if success := room.ResetVoting(playerName); !success {
+	if success := room.ResetVoting(playerID); !success {
 		c.JSON(http.StatusForbidden, gin.H{"error": models.ErrNotCreator.Error()})
 		return
 	}
@@ -204,10 +230,10 @@ func (h *RoomHandler) ResetVoting(c *gin.Context) {
 // UpdateLink handles requests to update the room link
 func (h *RoomHandler) UpdateLink(c *gin.Context) {
 	roomID := c.Param("id")
-	playerName := c.Query("name")
+	playerID := c.Query("playerID")
 
 	var req struct {
-		Link string `json:"link" binding:"required"`
+		Link string `json:"link"`
 	}
 
 	if err := c.BindJSON(&req); err != nil {
@@ -215,8 +241,8 @@ func (h *RoomHandler) UpdateLink(c *gin.Context) {
 		return
 	}
 
-	if playerName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": models.ErrInvalidPlayerName.Error()})
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
 		return
 	}
 
@@ -226,7 +252,7 @@ func (h *RoomHandler) UpdateLink(c *gin.Context) {
 		return
 	}
 
-	if success := room.UpdateLink(playerName, req.Link); !success {
+	if success := room.UpdateLink(playerID, req.Link); !success {
 		c.JSON(http.StatusForbidden, gin.H{"error": models.ErrNotCreator.Error()})
 		return
 	}
@@ -234,13 +260,46 @@ func (h *RoomHandler) UpdateLink(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"status": "link updated"})
 }
 
+// TransferCreator handles requests to transfer the creator role
+func (h *RoomHandler) TransferCreator(c *gin.Context) {
+	roomID := c.Param("id")
+	playerID := c.Query("playerID")
+
+	var req struct {
+		NewCreatorID string `json:"newCreatorID" binding:"required"`
+	}
+
+	if err := c.BindJSON(&req); err != nil {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid request format"})
+		return
+	}
+
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
+		return
+	}
+
+	room, exists := h.store.GetRoom(roomID)
+	if !exists {
+		c.JSON(http.StatusNotFound, gin.H{"error": models.ErrRoomNotFound.Error()})
+		return
+	}
+
+	if success := room.TransferCreator(playerID, req.NewCreatorID); !success {
+		c.JSON(http.StatusForbidden, gin.H{"error": models.ErrNotCreator.Error()})
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"status": "creator role transferred"})
+}
+
 // StreamEvents handles SSE (Server-Sent Events) for real-time updates
 func (h *RoomHandler) StreamEvents(c *gin.Context) {
 	roomID := c.Param("id")
-	playerName := c.Query("name")
+	playerID := c.Query("playerID")
 
-	if playerName == "" {
-		c.JSON(http.StatusBadRequest, gin.H{"error": models.ErrInvalidPlayerName.Error()})
+	if playerID == "" {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid player ID"})
 		return
 	}
 
@@ -255,6 +314,13 @@ func (h *RoomHandler) StreamEvents(c *gin.Context) {
 	c.Writer.Header().Set("Cache-Control", "no-cache")
 	c.Writer.Header().Set("Connection", "keep-alive")
 	c.Writer.Header().Set("Transfer-Encoding", "chunked")
+
+	// Set additional headers for CORS with SSE
+	origin := c.Request.Header.Get("Origin")
+	if origin != "" {
+		c.Writer.Header().Set("Access-Control-Allow-Origin", origin)
+		c.Writer.Header().Set("Access-Control-Allow-Credentials", "true")
+	}
 
 	// Create a channel for this client
 	events := room.Subscribe()
@@ -291,7 +357,7 @@ func (h *RoomHandler) StreamEvents(c *gin.Context) {
 			c.Writer.Flush()
 		case <-clientGone:
 			// Client disconnected
-			room.RemovePlayer(playerName) // Clean up if player is gone
+			room.RemovePlayer(playerID) // Clean up if player is gone
 			return
 		}
 	}

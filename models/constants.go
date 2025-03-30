@@ -2,13 +2,15 @@ package models
 
 // Event types
 const (
-	EventTypeInitialState  = "initial_state"
-	EventTypePlayerJoined  = "player_joined"
-	EventTypePlayerLeft    = "player_left"
-	EventTypeVoteSubmitted = "vote_submitted"
-	EventTypeCardsRevealed = "cards_revealed"
-	EventTypeVotingReset   = "voting_reset"
-	EventTypeLinkUpdated   = "link_updated"
+	EventTypeInitialState       = "initial_state"
+	EventTypePlayerJoined       = "player_joined"
+	EventTypePlayerLeft         = "player_left"
+	EventTypeVoteSubmitted      = "vote_submitted"
+	EventTypeCardsRevealed      = "cards_revealed"
+	EventTypeVotingReset        = "voting_reset"
+	EventTypeLinkUpdated        = "link_updated"
+	EventTypeCreatorChanged     = "creator_changed"
+	EventTypeCreatorTransferred = "creator_transferred"
 )
 
 // Card represents a planning poker card value

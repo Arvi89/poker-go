@@ -2,20 +2,43 @@
 const state = {
     currentRoom: null,
     playerName: '',
+    playerID: '', // New field for UUID-based player identification
     isCreator: false,
     eventSource: null,
     selectedCard: null,
     roomStatus: 'voting',
-    // For session persistence
+    // For session persistence with secure and domain support
     sessionStorage: {
         setItem(key, value) {
-            localStorage.setItem(key, value);
+            try {
+                localStorage.setItem(key, value);
+            } catch (e) {
+                // Fallback to cookies if localStorage fails
+                const secure = window.location.protocol === 'https:' ? '; secure' : '';
+                const domain = window.location.hostname !== 'localhost' ? `; domain=${window.location.hostname}` : '';
+                document.cookie = `${key}=${encodeURIComponent(value)}; path=/${domain}${secure}; max-age=2592000`; // 30 days
+            }
         },
         getItem(key) {
-            return localStorage.getItem(key);
+            try {
+                const value = localStorage.getItem(key);
+                if (value !== null) return value;
+            } catch (e) {
+                // Fallback to cookies
+                const match = document.cookie.match(new RegExp(`(^| )${key}=([^;]+)`));
+                if (match) return decodeURIComponent(match[2]);
+            }
+            return null;
         },
         removeItem(key) {
-            localStorage.removeItem(key);
+            try {
+                localStorage.removeItem(key);
+            } catch (e) {
+                // Remove cookie by setting expiry in the past
+                const domain = window.location.hostname !== 'localhost' ? `; domain=${window.location.hostname}` : '';
+                const secure = window.location.protocol === 'https:' ? '; secure' : '';
+                document.cookie = `${key}=; path=/${domain}${secure}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+            }
         }
     }
 };
@@ -52,7 +75,26 @@ const sessionLinkAnchor = document.getElementById('session-link-anchor');
 // Event Listeners
 createRoomForm.addEventListener('submit', createRoom);
 joinRoomForm.addEventListener('submit', joinRoom);
-shareRoomBtn.addEventListener('click', shareRoom);
+shareRoomBtn.addEventListener('click', () => {
+    if (!state.currentRoom) return;
+    
+    // Create a full absolute URL including protocol and domain
+    const roomUrl = new URL(`/room/${state.currentRoom}`, window.location.origin).href;
+    
+    // Check if the browser supports navigator.share API
+    if (navigator.share) {
+        navigator.share({
+            title: 'Join my Planning Poker room',
+            text: `Join my Planning Poker session with room ID: ${state.currentRoom}`,
+            url: roomUrl
+        }).catch(error => {
+            console.log('Error sharing:', error);
+            fallbackCopyToClipboard(roomUrl);
+        });
+    } else {
+        fallbackCopyToClipboard(roomUrl);
+    }
+});
 leaveRoomBtn.addEventListener('click', leaveRoom);
 revealCardsBtn.addEventListener('click', toggleVoting);
 toggleHistoryBtn.addEventListener('click', toggleHistoryPanel);
@@ -64,8 +106,31 @@ cardButtons.forEach(button => {
 });
 updateLinkBtn.addEventListener('click', updateSessionLink);
 
-// Check for room ID in URL on page load
-document.addEventListener('DOMContentLoaded', checkForRoomInURL);
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', () => {
+    // Check URL parameters for room ID
+    const urlParams = new URLSearchParams(window.location.search);
+    const roomId = urlParams.get('room');
+    
+    if (roomId) {
+        roomIdInput.value = roomId;
+        playerNameInput.focus();
+    }
+    
+    // Check for room in URL path
+    checkForRoomInURL();
+});
+
+// Handle page unload
+window.addEventListener('beforeunload', () => {
+    if (state.currentRoom && state.playerID) {
+        // Try to leave the room gracefully
+        fetch(`/api/rooms/${state.currentRoom}/leave?playerID=${encodeURIComponent(state.playerID)}`, {
+            method: 'GET',
+            keepalive: true
+        });
+    }
+});
 
 // API Functions
 async function createRoom(e) {
@@ -95,10 +160,28 @@ async function createRoom(e) {
         // Set state
         state.currentRoom = data.roomId;
         state.playerName = name;
+        
+        // Get player ID from response
+        if (data.playerID) {
+            state.playerID = data.playerID;
+        } else {
+            console.error("Server did not return a player ID for the creator");
+            throw new Error("No player ID received from server");
+        }
+        
         state.isCreator = true;
         
         // Enter the room
         enterRoom();
+        
+        // Extra check to ensure room is properly initialized
+        setTimeout(() => {
+            if (playersContainer.innerHTML.trim() === '') {
+                // If the players container is empty after a delay, try to fetch the room state
+                console.log("Room appears empty, fetching state again...");
+                fetchRoomState();
+            }
+        }, 1000);
         
     } catch (error) {
         showNotification(error.message, true);
@@ -133,6 +216,7 @@ async function joinRoom(e) {
         // Set state
         state.currentRoom = roomId;
         state.playerName = name;
+        state.playerID = data.playerID; // Store the player ID from the server
         state.isCreator = false;
         
         // Enter the room
@@ -144,33 +228,32 @@ async function joinRoom(e) {
 }
 
 async function leaveRoom() {
-    if (!state.currentRoom || !state.playerName) return;
+    if (!state.currentRoom || !state.playerID) return;
     
     try {
-        // Close event source first
-        if (state.eventSource) {
-            state.eventSource.close();
-        }
+        const response = await fetch(`/api/rooms/${state.currentRoom}/leave?playerID=${encodeURIComponent(state.playerID)}`);
         
-        await fetch(`/api/rooms/${state.currentRoom}/leave?name=${encodeURIComponent(state.playerName)}`);
-        
-        // Reset state
+        // Even if the request fails, reset the app state
         resetState();
         
-        // Reset URL
-        history.pushState({}, '', '/');
-        
-        // Show home screen
+        // Go back to home screen
         homeScreen.classList.remove('hidden');
         roomScreen.classList.add('hidden');
         
+        // Update URL
+        history.pushState({}, '', '/');
+        
     } catch (error) {
-        showNotification(error.message, true);
+        console.error('Error leaving room:', error);
+        // Still reset state and go to home screen even if the request fails
+        resetState();
+        homeScreen.classList.remove('hidden');
+        roomScreen.classList.add('hidden');
     }
 }
 
 async function selectCard(cardValue) {
-    if (!state.currentRoom || !state.playerName) return;
+    if (!state.currentRoom || !state.playerID) return;
     
     // Prevent voting if cards are revealed
     if (state.roomStatus !== 'voting') {
@@ -185,7 +268,7 @@ async function selectCard(cardValue) {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify({
-                name: state.playerName,
+                playerID: state.playerID,
                 card: cardValue
             })
         });
@@ -205,19 +288,12 @@ async function selectCard(cardValue) {
 }
 
 async function toggleVoting() {
-    if (!state.currentRoom || !state.playerName || !state.isCreator) return;
+    if (!state.currentRoom || !state.playerID || !state.isCreator) return;
     
     try {
         if (state.roomStatus === 'voting') {
-            // Check if anyone has voted before revealing
-            const anyVotes = Object.values(currentRoomState.players).some(player => player.card !== 'unknown');
-            if (!anyVotes) {
-                showNotification('Cannot reveal cards when no one has voted', true);
-                return;
-            }
-            
             // Reveal cards
-            const response = await fetch(`/api/rooms/${state.currentRoom}/reveal?name=${encodeURIComponent(state.playerName)}`);
+            const response = await fetch(`/api/rooms/${state.currentRoom}/reveal?playerID=${encodeURIComponent(state.playerID)}`);
             
             if (!response.ok) {
                 const data = await response.json();
@@ -226,18 +302,22 @@ async function toggleVoting() {
             
             // Update button text
             revealCardsBtn.textContent = 'Restart Voting';
+            
         } else {
             // Reset voting
-            const response = await fetch(`/api/rooms/${state.currentRoom}/reset?name=${encodeURIComponent(state.playerName)}`);
+            const response = await fetch(`/api/rooms/${state.currentRoom}/reset?playerID=${encodeURIComponent(state.playerID)}`);
             
             if (!response.ok) {
                 const data = await response.json();
                 throw new Error(data.error || 'Failed to reset voting');
             }
             
-            // Reset selected card
+            // Reset selected card for current user
             state.selectedCard = null;
             updateCardSelection();
+            
+            // Manual fetch room state to ensure everything is updated
+            await fetchRoomState();
             
             // Update button text
             revealCardsBtn.textContent = 'Reveal Cards';
@@ -249,8 +329,8 @@ async function toggleVoting() {
                 
                 // Explicitly clear the link in the database
                 try {
-                    await fetch(`/api/rooms/${state.currentRoom}/link?name=${encodeURIComponent(state.playerName)}`, {
-                        method: 'POST',
+                    await fetch(`/api/rooms/${state.currentRoom}?playerID=${encodeURIComponent(state.playerID)}`, {
+                        method: 'PATCH',
                         headers: {
                             'Content-Type': 'application/json'
                         },
@@ -270,13 +350,13 @@ async function toggleVoting() {
 }
 
 async function updateSessionLink() {
-    if (!state.currentRoom || !state.playerName || !state.isCreator) return;
+    if (!state.currentRoom || !state.playerID || !state.isCreator) return;
     
     const link = sessionLinkInput.value.trim();
     
     try {
-        const response = await fetch(`/api/rooms/${state.currentRoom}/link?name=${encodeURIComponent(state.playerName)}`, {
-            method: 'POST',
+        const response = await fetch(`/api/rooms/${state.currentRoom}?playerID=${encodeURIComponent(state.playerID)}`, {
+            method: 'PATCH',
             headers: {
                 'Content-Type': 'application/json'
             },
@@ -288,6 +368,7 @@ async function updateSessionLink() {
             throw new Error(data.error || 'Failed to update link');
         }
         
+        // Link will be updated for all users via SSE
         showNotification('Link updated successfully');
         
     } catch (error) {
@@ -300,13 +381,23 @@ function enterRoom() {
     // Update URL
     history.pushState({}, '', `/room/${state.currentRoom}`);
     
-    // Save player name to local storage for this room
+    // Save player data to local storage for this room
     state.sessionStorage.setItem(`poker_player_${state.currentRoom}`, state.playerName);
+    if (state.playerID) {
+        state.sessionStorage.setItem(`poker_playerID_${state.currentRoom}`, state.playerID);
+        if (state.isCreator) {
+            state.sessionStorage.setItem(`poker_isCreator_${state.currentRoom}`, 'true');
+        } else {
+            state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
+        }
+    } else {
+        console.error("Entering room without a player ID");
+    }
     
     // Update room display
     roomIdDisplay.textContent = state.currentRoom;
     
-    // Show creator controls if needed
+    // Show creator controls only if we're the creator
     if (state.isCreator) {
         creatorControls.classList.remove('hidden');
     } else {
@@ -317,88 +408,141 @@ function enterRoom() {
     homeScreen.classList.add('hidden');
     roomScreen.classList.remove('hidden');
     
-    // Connect to event source
-    connectEventSource();
+    // Connect to event source only if we have a player ID
+    if (state.playerID) {
+        connectEventSource();
+    } else {
+        console.error("Cannot connect to event source: no player ID available");
+    }
 }
 
 function connectEventSource() {
-    // Close existing connection if any
+    // Close any existing connection
     if (state.eventSource) {
         state.eventSource.close();
     }
     
-    // Create new event source
-    state.eventSource = new EventSource(`/api/rooms/${state.currentRoom}/events?name=${encodeURIComponent(state.playerName)}`);
+    // Create a new connection
+    const url = `/api/rooms/${state.currentRoom}/events?playerID=${encodeURIComponent(state.playerID)}`;
+    state.eventSource = new EventSource(url);
     
-    // Handle room events
-    state.eventSource.addEventListener('message', (event) => {
-        const data = JSON.parse(event.data);
-        handleRoomEvent(data);
-    });
+    // Set up event handlers
+    state.eventSource.onmessage = handleRoomEvent;
     
-    // Handle connection error
-    state.eventSource.addEventListener('error', () => {
-        // Try to reconnect after 5 seconds
+    state.eventSource.onerror = (error) => {
+        console.error('EventSource error:', error);
+        
+        // Attempt to reconnect after a delay
         setTimeout(() => {
-            if (state.currentRoom) {
+            if (state.currentRoom && state.playerID) {
                 connectEventSource();
             }
-        }, 5000);
-    });
+        }, 5000); // 5 second delay before reconnecting
+    };
 }
 
 function handleRoomEvent(event) {
-    const { type, payload } = event;
-    
-    switch (type) {
-        case 'initial_state':
-            updateRoomState(payload);
-            break;
-        case 'player_joined':
-            showNotification(`${payload.name} joined the room`);
-            // Refresh the room state to show the new player
-            fetch(`/api/rooms/${state.currentRoom}?name=${encodeURIComponent(state.playerName)}`)
-                .then(response => response.json())
-                .then(room => updateRoomState(room))
-                .catch(error => console.error('Error refreshing room state:', error));
-            break;
-        case 'player_left':
-            showNotification(`${payload.name} left the room`);
-            // Refresh the room state to remove the player
-            fetch(`/api/rooms/${state.currentRoom}?name=${encodeURIComponent(state.playerName)}`)
-                .then(response => response.json())
-                .then(room => updateRoomState(room))
-                .catch(error => console.error('Error refreshing room state:', error));
-            break;
-        case 'vote_submitted':
-            showNotification(`${payload.name} submitted a vote`);
-            // Refresh the room state to update the vote indicators
-            fetch(`/api/rooms/${state.currentRoom}?name=${encodeURIComponent(state.playerName)}`)
-                .then(response => response.json())
-                .then(room => updateRoomState(room))
-                .catch(error => console.error('Error refreshing room state:', error));
-            break;
-        case 'cards_revealed':
-            updateRoomState(payload);
-            showNotification('Cards revealed!');
-            break;
-        case 'voting_reset':
-            updateRoomState(payload);
-            showNotification('Voting has been reset');
-            state.selectedCard = null;
-            updateCardSelection();
-            break;
-        case 'link_updated':
-            // Update input field for creator
-            if (state.isCreator) {
-                sessionLinkInput.value = payload.link;
-            }
-            
-            // Update display for all participants
-            updateLinkDisplay(payload.link);
-            
-            showNotification('Link updated');
-            break;
+    try {
+        const data = JSON.parse(event.data);
+        
+        console.log('Received event:', data.type);
+        
+        switch (data.type) {
+            case 'initial_state':
+                updateRoomState(data.payload);
+                break;
+                
+            case 'player_joined':
+                showNotification(`${data.payload.name} joined the room`);
+                fetchRoomState();
+                break;
+                
+            case 'player_left':
+                showNotification(`${data.payload.name} left the room`);
+                fetchRoomState();
+                break;
+                
+            case 'vote_submitted':
+                showNotification(`${data.payload.name} submitted a vote`);
+                fetchRoomState();
+                break;
+                
+            case 'cards_revealed':
+                showNotification('Cards revealed!');
+                updateRoomState(data.payload);
+                break;
+                
+            case 'voting_reset':
+                showNotification('Voting has been reset');
+                
+                // Reset the selected card in our local state
+                state.selectedCard = null;
+                updateCardSelection();
+                
+                // Make sure to fully update the room state
+                updateRoomState(data.payload);
+                break;
+                
+            case 'link_updated':
+                if (data.payload.link) {
+                    showNotification('Session link updated');
+                } else {
+                    showNotification('Session link removed');
+                }
+                updateLinkDisplay(data.payload.link);
+                break;
+                
+            case 'creator_changed':
+                showNotification(`${data.payload.newCreator} is now the room creator`);
+                fetchRoomState();
+                break;
+                
+            case 'creator_transferred':
+                const message = `Creator role transferred from ${data.payload.previousCreator} to ${data.payload.newCreator}`;
+                showNotification(message);
+                
+                // Close any open context menus
+                document.querySelectorAll('.context-menu').forEach(menu => menu.remove());
+                
+                // Immediately fetch the room state to get the updated creator information
+                fetch(`/api/rooms/${state.currentRoom}?playerID=${encodeURIComponent(state.playerID)}`)
+                    .then(response => {
+                        if (!response.ok) {
+                            throw new Error('Failed to fetch room state');
+                        }
+                        return response.json();
+                    })
+                    .then(room => {
+                        // Get current player from the updated room state
+                        const player = room.players[state.playerID];
+                        if (player) {
+                            // Update isCreator state based on the server's response
+                            state.isCreator = player.isCreator;
+                            
+                            // Update UI and storage based on creator status
+                            if (state.isCreator) {
+                                creatorControls.classList.remove('hidden');
+                                state.sessionStorage.setItem(`poker_isCreator_${state.currentRoom}`, 'true');
+                            } else {
+                                creatorControls.classList.add('hidden');
+                                state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
+                            }
+                            
+                            // Update the full room state
+                            updateRoomState(room);
+                        }
+                    })
+                    .catch(error => {
+                        console.error('Error updating after creator transfer:', error);
+                    });
+                break;
+                
+            default:
+                console.log('Unknown event type:', data.type);
+                fetchRoomState();
+        }
+    } catch (error) {
+        console.error('Error handling event:', error);
     }
 }
 
@@ -419,6 +563,20 @@ function updateRoomState(room) {
         cardSelectionSection.classList.add('disabled');
     } else {
         cardSelectionSection.classList.remove('disabled');
+        
+        // If we're in voting status, ensure our selection matches what the server knows
+        if (state.playerID && room.players[state.playerID]) {
+            const serverCard = room.players[state.playerID].card;
+            // If the server shows we haven't voted or have unknown card, reset our selection
+            if (serverCard === 'unknown') {
+                state.selectedCard = null;
+                updateCardSelection();
+            } else if (serverCard !== state.selectedCard) {
+                // Otherwise, sync with server's value
+                state.selectedCard = serverCard;
+                updateCardSelection();
+            }
+        }
     }
     
     // Update the session link display for all participants
@@ -427,6 +585,31 @@ function updateRoomState(room) {
     // Update link input if we're the creator
     if (state.isCreator && room.link) {
         sessionLinkInput.value = room.link;
+    }
+    
+    // Check if our creator status matches what's on the server
+    if (state.playerID) {
+        const player = room.players[state.playerID];
+        if (player) {
+            // Update our creator status if it's different from the server
+            if (player.isCreator !== state.isCreator) {
+                state.isCreator = player.isCreator;
+                
+                // Update local storage
+                if (state.isCreator) {
+                    state.sessionStorage.setItem(`poker_isCreator_${state.currentRoom}`, 'true');
+                } else {
+                    state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
+                }
+                
+                // Update UI
+                if (state.isCreator) {
+                    creatorControls.classList.remove('hidden');
+                } else {
+                    creatorControls.classList.add('hidden');
+                }
+            }
+        }
     }
     
     // Always render players
@@ -464,13 +647,19 @@ function renderPlayers(room) {
     sortedPlayers.forEach(player => {
         const playerCard = document.createElement('div');
         playerCard.className = 'player-card';
+        
         if (player.isCreator) {
             playerCard.classList.add('is-creator');
         }
         
+        // Add clickable class to cards that can have creator role transferred to them
+        if (state.isCreator && player.id !== state.playerID) {
+            playerCard.classList.add('clickable');
+        }
+        
         const playerName = document.createElement('div');
         playerName.className = 'player-name';
-        playerName.textContent = player.name === state.playerName ? `${player.name} (You)` : player.name;
+        playerName.textContent = player.id === state.playerID ? `${player.name} (You)` : player.name;
         
         const pokerCard = document.createElement('div');
         pokerCard.className = 'poker-card';
@@ -483,7 +672,7 @@ function renderPlayers(room) {
             } else {
                 pokerCard.textContent = player.card === 'coffee' ? '☕' : player.card;
             }
-        } else if (player.name === state.playerName) {
+        } else if (player.id === state.playerID) {
             // Current player can see their own card
             pokerCard.textContent = player.card === 'coffee' ? '☕' : player.card;
             if (player.card === 'unknown') {
@@ -501,6 +690,43 @@ function renderPlayers(room) {
                 pokerCard.classList.add('voted-card');
                 pokerCard.textContent = '✓';
             }
+        }
+        
+        // Add context menu for transfer creator role functionality
+        if (state.isCreator && player.id !== state.playerID) {
+            playerCard.addEventListener('click', (e) => {
+                // Remove any existing active menus
+                document.querySelectorAll('.context-menu').forEach(menu => menu.remove());
+                
+                // Create context menu
+                const menu = document.createElement('div');
+                menu.className = 'context-menu';
+                
+                const transferOption = document.createElement('div');
+                transferOption.className = 'menu-option';
+                transferOption.textContent = 'Transfer creator role';
+                transferOption.addEventListener('click', (e) => {
+                    e.stopPropagation();
+                    transferCreatorRole(player.id);
+                    menu.remove();
+                });
+                
+                menu.appendChild(transferOption);
+                
+                // Position menu near the player card
+                menu.style.top = `${e.clientY}px`;
+                menu.style.left = `${e.clientX}px`;
+                
+                document.body.appendChild(menu);
+                
+                // Close menu when clicking outside
+                setTimeout(() => {
+                    window.addEventListener('click', function closeMenu() {
+                        menu.remove();
+                        window.removeEventListener('click', closeMenu);
+                    }, { once: true });
+                }, 0);
+            });
         }
         
         playerCard.appendChild(playerName);
@@ -804,37 +1030,19 @@ function showNotification(message, isError = false) {
     }, 3000);
 }
 
-function shareRoom() {
-    if (!state.currentRoom) return;
-    
-    const roomURL = `${window.location.origin}/room/${state.currentRoom}`;
-    
-    // Try to use the clipboard API if available
-    if (navigator.clipboard && navigator.clipboard.writeText) {
-        navigator.clipboard.writeText(roomURL)
-            .then(() => {
-                showNotification('Room link copied to clipboard', false);
-            })
-            .catch(() => {
-                // Fallback
-                prompt('Copy the room link:', roomURL);
-            });
-    } else {
-        // Fallback for browsers without clipboard API
-        prompt('Copy the room link:', roomURL);
-    }
-}
-
 // Reset the application state
 function resetState() {
     // Remove from local storage
     if (state.currentRoom) {
         state.sessionStorage.removeItem(`poker_player_${state.currentRoom}`);
+        state.sessionStorage.removeItem(`poker_playerID_${state.currentRoom}`);
+        state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
     }
     
     // Reset state variables
     state.currentRoom = null;
     state.playerName = '';
+    state.playerID = '';
     state.isCreator = false;
     state.selectedCard = null;
     state.roomStatus = 'voting';
@@ -847,6 +1055,9 @@ function resetState() {
     // Clear displayed cards
     const selectedCards = document.querySelectorAll('.card-btn.selected');
     selectedCards.forEach(card => card.classList.remove('selected'));
+    
+    // Hide creator controls
+    creatorControls.classList.add('hidden');
     
     // Clear players
     playersContainer.innerHTML = '';
@@ -863,14 +1074,56 @@ function checkForRoomInURL() {
         
         // Check if we have this room ID and name in local storage
         const savedPlayerName = state.sessionStorage.getItem(`poker_player_${roomId}`);
+        const savedPlayerID = state.sessionStorage.getItem(`poker_playerID_${roomId}`);
+        const isCreator = state.sessionStorage.getItem(`poker_isCreator_${roomId}`) === 'true';
         
-        if (savedPlayerName) {
-            // Auto-join with saved name
+        if (savedPlayerName && savedPlayerID) {
+            // Auto-join with saved credentials
             state.currentRoom = roomId;
             state.playerName = savedPlayerName;
+            state.playerID = savedPlayerID;
+            state.isCreator = isCreator;
             
-            // Attempt to rejoin the room
-            rejoinRoom(roomId, savedPlayerName);
+            // Get the room state
+            fetch(`/api/rooms/${roomId}?playerID=${encodeURIComponent(savedPlayerID)}`)
+                .then(response => {
+                    if (!response.ok) {
+                        throw new Error('Failed to rejoin room');
+                    }
+                    return response.json();
+                })
+                .then(room => {
+                    // Check if we're properly recognized as a member in the room
+                    const player = room.players[savedPlayerID];
+                    if (player) {
+                        // Update creator status based on current room state
+                        if (player.isCreator !== state.isCreator) {
+                            state.isCreator = player.isCreator;
+                            if (state.isCreator) {
+                                state.sessionStorage.setItem(`poker_isCreator_${state.currentRoom}`, 'true');
+                            } else {
+                                state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
+                            }
+                        }
+                        
+                        // Enter the room
+                        enterRoom();
+                    } else {
+                        // We're not recognized, need to rejoin with our saved name
+                        rejoinRoom(roomId, savedPlayerName);
+                    }
+                })
+                .catch(error => {
+                    console.error('Error rejoining room:', error);
+                    
+                    // Try to rejoin with the saved name for this room
+                    if (savedPlayerName) {
+                        rejoinRoom(roomId, savedPlayerName);
+                    } else {
+                        // Show join prompt
+                        showRoomJoinPrompt(roomId);
+                    }
+                });
         } else {
             // Show name prompt modal
             showRoomJoinPrompt(roomId);
@@ -909,36 +1162,23 @@ async function rejoinRoom(roomId, playerName) {
             return;
         }
         
-        // Successfully rejoined, enter the room
-        enterRoom();
+        // Save the player ID we got from the server
+        if (data.playerID) {
+            state.playerID = data.playerID;
+            
+            // Successfully rejoined, enter the room
+            enterRoom();
+        } else {
+            console.error("Server did not return a player ID when rejoining");
+            showNotification('Failed to rejoin: no player ID received', true);
+            showRoomJoinPrompt(roomId);
+        }
         
     } catch (error) {
         showNotification(error.message, true);
         showRoomJoinPrompt(roomId);
     }
 }
-
-// Check URL for room ID on page load
-document.addEventListener('DOMContentLoaded', () => {
-    const urlParams = new URLSearchParams(window.location.search);
-    const roomId = urlParams.get('room');
-    
-    if (roomId) {
-        roomIdInput.value = roomId;
-        playerNameInput.focus();
-    }
-});
-
-// Handle page unload
-window.addEventListener('beforeunload', () => {
-    if (state.currentRoom && state.playerName) {
-        // Try to leave the room gracefully
-        fetch(`/api/rooms/${state.currentRoom}/leave?name=${encodeURIComponent(state.playerName)}`, {
-            method: 'GET',
-            keepalive: true
-        });
-    }
-});
 
 function toggleHistoryPanel() {
     historyPanel.classList.toggle('hidden');
@@ -964,5 +1204,77 @@ function updateLinkDisplay(link) {
         sessionLinkDisplay.classList.add('hidden');
         sessionLinkAnchor.href = '#';
         sessionLinkAnchor.textContent = '';
+    }
+}
+
+function fallbackCopyToClipboard(text) {
+    // Create a temporary input element
+    const input = document.createElement('input');
+    input.style.position = 'fixed';
+    input.style.opacity = 0;
+    input.value = text;
+    document.body.appendChild(input);
+    
+    // Select and copy
+    input.select();
+    document.execCommand('copy');
+    
+    // Clean up
+    document.body.removeChild(input);
+    
+    // Show notification
+    showNotification('Room URL copied to clipboard!');
+}
+
+// Fetch the current room state from the server
+function fetchRoomState() {
+    if (!state.currentRoom || !state.playerID) return;
+    
+    fetch(`/api/rooms/${state.currentRoom}?playerID=${encodeURIComponent(state.playerID)}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to fetch room state');
+            }
+            return response.json();
+        })
+        .then(room => {
+            updateRoomState(room);
+        })
+        .catch(error => {
+            console.error('Error fetching room state:', error);
+        });
+}
+
+// Function to transfer the creator role to a new player
+async function transferCreatorRole(newCreatorID) {
+    if (!state.currentRoom || !state.playerID || !state.isCreator) return;
+    
+    try {
+        // Immediately update local state to prevent UI confusion
+        state.isCreator = false;
+        creatorControls.classList.add('hidden');
+        
+        const response = await fetch(`/api/rooms/${state.currentRoom}/transfer-creator?playerID=${encodeURIComponent(state.playerID)}`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({ newCreatorID })
+        });
+        
+        const data = await response.json();
+        
+        if (!response.ok) {
+            // Revert state if transfer failed
+            state.isCreator = true;
+            creatorControls.classList.remove('hidden');
+            throw new Error(data.error || 'Failed to transfer creator role');
+        }
+        
+        // Update local storage if transfer was successful
+        state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
+        showNotification('Creator role transfer initiated');
+    } catch (error) {
+        showNotification(error.message, true);
     }
 } 

@@ -20,38 +20,46 @@ func NewRoom(creatorName string) *Room {
 		Clients:     make(map[chan Event]bool),
 	}
 
-	// Add the creator
+	// Add the creator with a unique ID
+	creatorID := uuid.New().String()
 	creatorPlayer := &Player{
+		ID:        creatorID,
 		Name:      creatorName,
 		Card:      Unknown,
 		IsCreator: true,
 		JoinedAt:  time.Now(),
 	}
 
-	room.Players[creatorName] = creatorPlayer
+	room.Players[creatorID] = creatorPlayer
 
 	return room
 }
 
 // AddPlayer adds a new player to the room
-func (r *Room) AddPlayer(name string) bool {
+func (r *Room) AddPlayer(name string) (string, bool) {
 	r.Mutex.Lock()
 	defer r.Mutex.Unlock()
 
 	// Check if player name already exists
-	if _, exists := r.Players[name]; exists {
-		return false
+	for _, player := range r.Players {
+		if player.Name == name {
+			return "", false
+		}
 	}
+
+	// Generate a unique ID for the player
+	playerID := uuid.New().String()
 
 	// Create new player
 	player := &Player{
+		ID:        playerID,
 		Name:      name,
 		Card:      Unknown,
 		IsCreator: false,
 		JoinedAt:  time.Now(),
 	}
 
-	r.Players[name] = player
+	r.Players[playerID] = player
 
 	// Broadcast player joined event
 	r.broadcastEvent(Event{
@@ -59,35 +67,65 @@ func (r *Room) AddPlayer(name string) bool {
 		Payload: player,
 	})
 
-	return true
+	return playerID, true
 }
 
 // RemovePlayer removes a player from the room
-func (r *Room) RemovePlayer(name string) bool {
+func (r *Room) RemovePlayer(playerID string) bool {
 	r.Mutex.Lock()
 	defer r.Mutex.Unlock()
 
-	if _, exists := r.Players[name]; !exists {
+	player, exists := r.Players[playerID]
+	if !exists {
 		return false
 	}
 
-	delete(r.Players, name)
+	// Get the player name for the event payload before deleting
+	playerName := player.Name
+	wasCreator := player.IsCreator
+
+	delete(r.Players, playerID)
+
+	// If the player was a creator and there are other players, transfer creator rights
+	if wasCreator && len(r.Players) > 0 {
+		// Find another player to transfer creator rights to
+		var newCreator *Player
+
+		// Pick the first available player
+		for _, p := range r.Players {
+			newCreator = p
+			break
+		}
+
+		// Set the new player as creator
+		if newCreator != nil {
+			newCreator.IsCreator = true
+
+			// Broadcast creator changed event
+			r.broadcastEvent(Event{
+				Type: EventTypeCreatorChanged,
+				Payload: map[string]string{
+					"newCreator": newCreator.Name,
+				},
+			})
+		}
+	}
 
 	// Broadcast player left event
 	r.broadcastEvent(Event{
 		Type:    EventTypePlayerLeft,
-		Payload: map[string]string{"name": name},
+		Payload: map[string]string{"name": playerName},
 	})
 
 	return true
 }
 
 // SubmitVote submits a vote for a player
-func (r *Room) SubmitVote(playerName string, card Card) bool {
+func (r *Room) SubmitVote(playerID string, card Card) bool {
 	r.Mutex.Lock()
 	defer r.Mutex.Unlock()
 
-	player, exists := r.Players[playerName]
+	player, exists := r.Players[playerID]
 	if !exists {
 		return false
 	}
@@ -98,7 +136,7 @@ func (r *Room) SubmitVote(playerName string, card Card) bool {
 	r.broadcastEvent(Event{
 		Type: EventTypeVoteSubmitted,
 		Payload: map[string]string{
-			"name": playerName,
+			"name": player.Name,
 		},
 	})
 
@@ -106,11 +144,11 @@ func (r *Room) SubmitVote(playerName string, card Card) bool {
 }
 
 // RevealCards reveals all players' cards
-func (r *Room) RevealCards(initiatorName string) bool {
+func (r *Room) RevealCards(initiatorID string) bool {
 	r.Mutex.Lock()
 	defer r.Mutex.Unlock()
 
-	player, exists := r.Players[initiatorName]
+	player, exists := r.Players[initiatorID]
 	if !exists || !player.IsCreator {
 		return false
 	}
@@ -127,11 +165,11 @@ func (r *Room) RevealCards(initiatorName string) bool {
 }
 
 // ResetVoting resets the voting session
-func (r *Room) ResetVoting(initiatorName string) bool {
+func (r *Room) ResetVoting(initiatorID string) bool {
 	r.Mutex.Lock()
 	defer r.Mutex.Unlock()
 
-	player, exists := r.Players[initiatorName]
+	player, exists := r.Players[initiatorID]
 	if !exists || !player.IsCreator {
 		return false
 	}
@@ -140,9 +178,9 @@ func (r *Room) ResetVoting(initiatorName string) bool {
 	if r.Status == StatusRevealed {
 		// Create a deep copy of the current players state
 		playersCopy := make(map[string]*Player)
-		for name, player := range r.Players {
+		for id, player := range r.Players {
 			playerCopy := *player // Create a copy of the player
-			playersCopy[name] = &playerCopy
+			playersCopy[id] = &playerCopy
 		}
 
 		// Add to history
@@ -184,11 +222,11 @@ func (r *Room) ResetVoting(initiatorName string) bool {
 }
 
 // UpdateLink updates the room's link
-func (r *Room) UpdateLink(initiatorName string, link string) bool {
+func (r *Room) UpdateLink(initiatorID string, link string) bool {
 	r.Mutex.Lock()
 	defer r.Mutex.Unlock()
 
-	player, exists := r.Players[initiatorName]
+	player, exists := r.Players[initiatorID]
 	if !exists || !player.IsCreator {
 		return false
 	}
@@ -200,6 +238,39 @@ func (r *Room) UpdateLink(initiatorName string, link string) bool {
 	r.broadcastEvent(Event{
 		Type:    EventTypeLinkUpdated,
 		Payload: map[string]string{"link": link},
+	})
+
+	return true
+}
+
+// TransferCreator transfers creator role from current creator to another player
+func (r *Room) TransferCreator(initiatorID string, newCreatorID string) bool {
+	r.Mutex.Lock()
+	defer r.Mutex.Unlock()
+
+	// Check if initiator is the current creator
+	initiator, exists := r.Players[initiatorID]
+	if !exists || !initiator.IsCreator {
+		return false
+	}
+
+	// Check if the target player exists
+	newCreator, exists := r.Players[newCreatorID]
+	if !exists {
+		return false
+	}
+
+	// Transfer creator role
+	initiator.IsCreator = false
+	newCreator.IsCreator = true
+
+	// Broadcast creator transferred event
+	r.broadcastEvent(Event{
+		Type: EventTypeCreatorTransferred,
+		Payload: map[string]interface{}{
+			"previousCreator": initiator.Name,
+			"newCreator":      newCreator.Name,
+		},
 	})
 
 	return true
