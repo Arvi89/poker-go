@@ -1,43 +1,34 @@
 // Global state
 const state = {
+    currentView: 'landing',
     currentRoom: null,
-    playerName: '',
-    playerID: '', // New field for UUID-based player identification
     isCreator: false,
-    eventSource: null,
+    playerName: '',
+    playerID: null,
     selectedCard: null,
     roomStatus: 'voting',
-    // For session persistence with secure and domain support
+    websocket: null,
     sessionStorage: {
         setItem(key, value) {
             try {
-                localStorage.setItem(key, value);
+                sessionStorage.setItem(key, value);
             } catch (e) {
-                // Fallback to cookies if localStorage fails
-                const secure = window.location.protocol === 'https:' ? '; secure' : '';
-                const domain = window.location.hostname !== 'localhost' ? `; domain=${window.location.hostname}` : '';
-                document.cookie = `${key}=${encodeURIComponent(value)}; path=/${domain}${secure}; max-age=2592000`; // 30 days
+                console.warn('SessionStorage not available:', e);
             }
         },
         getItem(key) {
             try {
-                const value = localStorage.getItem(key);
-                if (value !== null) return value;
+                return sessionStorage.getItem(key);
             } catch (e) {
-                // Fallback to cookies
-                const match = document.cookie.match(new RegExp(`(^| )${key}=([^;]+)`));
-                if (match) return decodeURIComponent(match[2]);
+                console.warn('SessionStorage not available:', e);
+                return null;
             }
-            return null;
         },
         removeItem(key) {
             try {
-                localStorage.removeItem(key);
+                sessionStorage.removeItem(key);
             } catch (e) {
-                // Remove cookie by setting expiry in the past
-                const domain = window.location.hostname !== 'localhost' ? `; domain=${window.location.hostname}` : '';
-                const secure = window.location.protocol === 'https:' ? '; secure' : '';
-                document.cookie = `${key}=; path=/${domain}${secure}; expires=Thu, 01 Jan 1970 00:00:00 GMT`;
+                console.warn('SessionStorage not available:', e);
             }
         }
     }
@@ -151,11 +142,14 @@ async function createRoom(e) {
             body: JSON.stringify({ name })
         });
         
-        const data = await response.json();
+        const responseData = await response.json();
         
         if (!response.ok) {
-            throw new Error(data.error || 'Failed to create room');
+            throw new Error(responseData.error || 'Failed to create room');
         }
+        
+        // With new API format, data is nested inside a "data" field
+        const data = responseData.data || responseData;
         
         // Set state
         state.currentRoom = data.roomId;
@@ -207,11 +201,14 @@ async function joinRoom(e) {
             body: JSON.stringify({ name })
         });
         
-        const data = await response.json();
+        const responseData = await response.json();
         
         if (!response.ok) {
-            throw new Error(data.error || 'Failed to join room');
+            throw new Error(responseData.error || 'Failed to join room');
         }
+        
+        // With new API format, data is nested inside a "data" field
+        const data = responseData.data || responseData;
         
         // Set state
         state.currentRoom = roomId;
@@ -368,7 +365,7 @@ async function updateSessionLink() {
             throw new Error(data.error || 'Failed to update link');
         }
         
-        // Link will be updated for all users via SSE
+        // Link will be updated for all users via WebSocket
         showNotification('Link updated successfully');
         
     } catch (error) {
@@ -408,142 +405,176 @@ function enterRoom() {
     homeScreen.classList.add('hidden');
     roomScreen.classList.remove('hidden');
     
-    // Connect to event source only if we have a player ID
+    // Connect to websocket only if we have a player ID
     if (state.playerID) {
-        connectEventSource();
+        connectWebSocket();
     } else {
-        console.error("Cannot connect to event source: no player ID available");
+        console.error("Cannot connect to WebSocket: no player ID available");
     }
 }
 
-function connectEventSource() {
+function connectWebSocket() {
     // Close any existing connection
-    if (state.eventSource) {
-        state.eventSource.close();
+    if (state.websocket) {
+        state.websocket.close();
+        state.websocket = null;
     }
     
-    // Create a new connection
-    const url = `/api/rooms/${state.currentRoom}/events?playerID=${encodeURIComponent(state.playerID)}`;
-    state.eventSource = new EventSource(url);
+    // Create connection URL with appropriate protocol
+    const protocol = window.location.protocol === 'https:' ? 'wss://' : 'ws://';
+    const url = `${protocol}${window.location.host}/api/rooms/${state.currentRoom}/ws?playerID=${encodeURIComponent(state.playerID)}`;
     
-    // Set up event handlers
-    state.eventSource.onmessage = handleRoomEvent;
-    
-    state.eventSource.onerror = (error) => {
-        console.error('EventSource error:', error);
+    try {
+        // Create new WebSocket connection
+        state.websocket = new WebSocket(url);
         
-        // Attempt to reconnect after a delay
-        setTimeout(() => {
-            if (state.currentRoom && state.playerID) {
-                connectEventSource();
-            }
-        }, 5000); // 5 second delay before reconnecting
-    };
+        // Set up event handlers
+        state.websocket.onopen = () => console.log('WebSocket connection established');
+        state.websocket.onmessage = handleRoomEvent;
+        state.websocket.onerror = handleWebSocketError;
+        state.websocket.onclose = handleWebSocketClose;
+    } catch (error) {
+        console.error('WebSocket connection error:', error);
+        scheduleReconnect();
+    }
+}
+
+function handleWebSocketError(error) {
+    console.error('WebSocket error:', error);
+}
+
+function handleWebSocketClose() {
+    console.log('WebSocket connection closed');
+    scheduleReconnect();
+}
+
+function scheduleReconnect() {
+    // Attempt to reconnect after a delay
+    setTimeout(() => {
+        if (state.currentRoom && state.playerID) {
+            connectWebSocket();
+        }
+    }, 5000); // 5 second delay before reconnecting
 }
 
 function handleRoomEvent(event) {
     try {
         const data = JSON.parse(event.data);
-        
         console.log('Received event:', data.type);
         
-        switch (data.type) {
-            case 'initial_state':
-                updateRoomState(data.payload);
-                break;
-                
-            case 'player_joined':
-                showNotification(`${data.payload.name} joined the room`);
-                fetchRoomState();
-                break;
-                
-            case 'player_left':
-                showNotification(`${data.payload.name} left the room`);
-                fetchRoomState();
-                break;
-                
-            case 'vote_submitted':
-                showNotification(`${data.payload.name} submitted a vote`);
-                fetchRoomState();
-                break;
-                
-            case 'cards_revealed':
-                showNotification('Cards revealed!');
-                updateRoomState(data.payload);
-                break;
-                
-            case 'voting_reset':
-                showNotification('Voting has been reset');
-                
-                // Reset the selected card in our local state
-                state.selectedCard = null;
-                updateCardSelection();
-                
-                // Make sure to fully update the room state
-                updateRoomState(data.payload);
-                break;
-                
-            case 'link_updated':
-                if (data.payload.link) {
-                    showNotification('Session link updated');
-                } else {
-                    showNotification('Session link removed');
-                }
-                updateLinkDisplay(data.payload.link);
-                break;
-                
-            case 'creator_changed':
-                showNotification(`${data.payload.newCreator} is now the room creator`);
-                fetchRoomState();
-                break;
-                
-            case 'creator_transferred':
-                const message = `Creator role transferred from ${data.payload.previousCreator} to ${data.payload.newCreator}`;
-                showNotification(message);
-                
-                // Close any open context menus
-                document.querySelectorAll('.context-menu').forEach(menu => menu.remove());
-                
-                // Immediately fetch the room state to get the updated creator information
-                fetch(`/api/rooms/${state.currentRoom}?playerID=${encodeURIComponent(state.playerID)}`)
-                    .then(response => {
-                        if (!response.ok) {
-                            throw new Error('Failed to fetch room state');
-                        }
-                        return response.json();
-                    })
-                    .then(room => {
-                        // Get current player from the updated room state
-                        const player = room.players[state.playerID];
-                        if (player) {
-                            // Update isCreator state based on the server's response
-                            state.isCreator = player.isCreator;
-                            
-                            // Update UI and storage based on creator status
-                            if (state.isCreator) {
-                                creatorControls.classList.remove('hidden');
-                                state.sessionStorage.setItem(`poker_isCreator_${state.currentRoom}`, 'true');
-                            } else {
-                                creatorControls.classList.add('hidden');
-                                state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
-                            }
-                            
-                            // Update the full room state
-                            updateRoomState(room);
-                        }
-                    })
-                    .catch(error => {
-                        console.error('Error updating after creator transfer:', error);
-                    });
-                break;
-                
-            default:
-                console.log('Unknown event type:', data.type);
-                fetchRoomState();
+        // Call the appropriate event handler based on event type
+        const handlers = {
+            'initial_state': handleInitialState,
+            'player_joined': handlePlayerJoined,
+            'player_left': handlePlayerLeft,
+            'vote_submitted': handleVoteSubmitted,
+            'cards_revealed': handleCardsRevealed,
+            'voting_reset': handleVotingReset,
+            'link_updated': handleLinkUpdated,
+            'creator_changed': handleCreatorChanged,
+            'creator_transferred': handleCreatorTransferred
+        };
+        
+        const handler = handlers[data.type];
+        if (handler) {
+            handler(data.payload);
+        } else {
+            console.log('Unknown event type:', data.type);
+            fetchRoomState();
         }
     } catch (error) {
         console.error('Error handling event:', error);
     }
+}
+
+// Individual event handlers
+function handleInitialState(payload) {
+    updateRoomState(payload);
+}
+
+function handlePlayerJoined(payload) {
+    showNotification(`${payload.name} joined the room`);
+    fetchRoomState();
+}
+
+function handlePlayerLeft(payload) {
+    showNotification(`${payload.name} left the room`);
+    fetchRoomState();
+}
+
+function handleVoteSubmitted(payload) {
+    showNotification(`${payload.name} submitted a vote`);
+    fetchRoomState();
+}
+
+function handleCardsRevealed(payload) {
+    showNotification('Cards revealed!');
+    updateRoomState(payload);
+}
+
+function handleVotingReset(payload) {
+    showNotification('Voting has been reset');
+    
+    // Reset the selected card in our local state
+    state.selectedCard = null;
+    updateCardSelection();
+    
+    // Make sure to fully update the room state
+    updateRoomState(payload);
+}
+
+function handleLinkUpdated(payload) {
+    if (payload.link) {
+        showNotification('Session link updated');
+    } else {
+        showNotification('Session link removed');
+    }
+    updateLinkDisplay(payload.link);
+}
+
+function handleCreatorChanged(payload) {
+    showNotification(`${payload.newCreator} is now the room creator`);
+    fetchRoomState();
+}
+
+function handleCreatorTransferred(payload) {
+    const message = `Creator role transferred from ${payload.previousCreator} to ${payload.newCreator}`;
+    showNotification(message);
+    
+    // Close any open context menus
+    document.querySelectorAll('.context-menu').forEach(menu => menu.remove());
+    
+    // Immediately fetch the room state to get the updated creator information
+    fetch(`/api/rooms/${state.currentRoom}?playerID=${encodeURIComponent(state.playerID)}`)
+        .then(response => {
+            if (!response.ok) {
+                throw new Error('Failed to fetch room state');
+            }
+            return response.json();
+        })
+        .then(room => {
+            // Get current player from the updated room state
+            const player = room.players[state.playerID];
+            if (player) {
+                // Update isCreator state based on the server's response
+                state.isCreator = player.isCreator;
+                
+                // Update UI and storage based on creator status
+                if (state.isCreator) {
+                    creatorControls.classList.remove('hidden');
+                    state.sessionStorage.setItem(`poker_isCreator_${state.currentRoom}`, 'true');
+                } else {
+                    creatorControls.classList.add('hidden');
+                    state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
+                }
+                
+                // Update the full room state
+                updateRoomState(room);
+            }
+        })
+        .catch(error => {
+            console.error('Error updating after creator transfer:', error);
+        });
 }
 
 function updateRoomState(room) {
@@ -1032,35 +1063,51 @@ function showNotification(message, isError = false) {
 
 // Reset the application state
 function resetState() {
-    // Remove from local storage
-    if (state.currentRoom) {
-        state.sessionStorage.removeItem(`poker_player_${state.currentRoom}`);
-        state.sessionStorage.removeItem(`poker_playerID_${state.currentRoom}`);
-        state.sessionStorage.removeItem(`poker_isCreator_${state.currentRoom}`);
-    }
-    
-    // Reset state variables
+    // Reset local variables
     state.currentRoom = null;
-    state.playerName = '';
-    state.playerID = '';
     state.isCreator = false;
+    state.playerName = '';
+    state.playerID = null;
     state.selectedCard = null;
     state.roomStatus = 'voting';
     
-    if (state.eventSource) {
-        state.eventSource.close();
-        state.eventSource = null;
+    // Close WebSocket connection if open
+    if (state.websocket) {
+        state.websocket.close();
+        state.websocket = null;
     }
     
-    // Clear displayed cards
-    const selectedCards = document.querySelectorAll('.card-btn.selected');
-    selectedCards.forEach(card => card.classList.remove('selected'));
+    // Reset UI elements
+    playersContainer.innerHTML = '';
+    voteHistoryElement.innerHTML = '';
+    historyPanel.classList.add('hidden');
+    
+    // Reset selected cards
+    cardButtons.forEach(card => card.classList.remove('selected'));
     
     // Hide creator controls
     creatorControls.classList.add('hidden');
     
-    // Clear players
-    playersContainer.innerHTML = '';
+    // Reset session link display
+    sessionLinkDisplay.classList.add('hidden');
+    sessionLinkAnchor.href = '#';
+    sessionLinkAnchor.textContent = '';
+    sessionLinkInput.value = '';
+    
+    // Reset room ID display
+    roomIdDisplay.textContent = '';
+    
+    // Reset form inputs for next use
+    creatorNameInput.value = '';
+    playerNameInput.value = '';
+    roomIdInput.value = '';
+    
+    // Hide notifications
+    notification.classList.remove('visible');
+    notification.classList.remove('error');
+    
+    // Clear room state reference
+    currentRoomState = null;
 }
 
 // Handle room URL detection
@@ -1154,13 +1201,16 @@ async function rejoinRoom(roomId, playerName) {
             body: JSON.stringify({ name: playerName })
         });
         
-        const data = await response.json();
+        const responseData = await response.json();
         
         if (!response.ok) {
             // If rejoining fails, prompt for a new name
             showRoomJoinPrompt(roomId);
             return;
         }
+        
+        // With new API format, data is nested inside a "data" field
+        const data = responseData.data || responseData;
         
         // Save the player ID we got from the server
         if (data.playerID) {

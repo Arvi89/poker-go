@@ -10,7 +10,9 @@ This application provides a simple, efficient way for agile teams to estimate wo
 
 ## Features
 
-- **Real-time Updates**: Server-Sent Events (SSE) for instant communication
+- **Simple Interface**: Clean UI for easy planning poker sessions
+- **Real-time Updates**: WebSockets for instant communication
+- **No Registration**: Quick setup with temporary rooms
 - **Room Management**: Create and join rooms with unique IDs
 - **Planning Poker**: Standard card deck with values (0, 1, 2, 3, 5, 8, 13, 20, 40, 100, ?, ☕)
 - **Vote Tracking**: Keep track of who has voted without revealing values

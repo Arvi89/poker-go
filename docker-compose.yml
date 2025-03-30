@@ -4,18 +4,9 @@ services:
   poker-app:
     build: .
     ports:
-      - "8080:8080"
-      # Uncomment for HTTPS
-      # - "443:443"
+      - "80:8080"
     restart: unless-stopped
-    volumes:
-      # For persistent data if needed
-      - ./data:/app/data
-      # Uncomment for HTTPS support
-      # - ./ssl:/app/ssl
     environment:
       # Example environment variables for production deployment
       # Uncomment and set these values for your domain
-      EXAMPLE_DOMAIN: "example.com"
-      # ENABLE_HTTPS: "true"
-      # CORS_ORIGINS: "https://example.com,https://www.example.com" 
+      CORS_ORIGINS: "https://poker.lefev.re" 
