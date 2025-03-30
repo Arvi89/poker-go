@@ -2,6 +2,10 @@
 
 This project has been entirely written by Cursor with Claude 3.7 to see what it could do.
 
+Refactoring the front end is an issue, it breaks what's been done.
+
+You can try here: https://poker.lefev.re/
+
 A real-time planning poker application for agile teams, built with Go and vanilla JavaScript.
 
 ## Overview
