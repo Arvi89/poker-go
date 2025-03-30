@@ -31,7 +31,6 @@ func main() {
 		config.AllowAllOrigins = false
 	} else {
 		// Default origins in development
-		config.AllowOrigins = []string{"*"}
 		config.AllowAllOrigins = true
 	}
 
