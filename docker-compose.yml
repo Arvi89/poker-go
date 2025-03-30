@@ -1,0 +1,12 @@
+version: '3'
+
+services:
+  poker-app:
+    build: .
+    ports:
+      - "80:8080"
+    restart: unless-stopped
+    environment:
+      # Example environment variables for production deployment
+      # Uncomment and set these values for your domain
+      CORS_ORIGINS: "https://poker.lefev.re" 

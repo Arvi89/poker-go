@@ -7,6 +7,7 @@ import (
 
 // Player represents a user in a planning poker session
 type Player struct {
+	ID        string    `json:"id"`
 	Name      string    `json:"name"`
 	Card      Card      `json:"card"`
 	IsCreator bool      `json:"isCreator"`

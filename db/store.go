@@ -3,7 +3,7 @@ package db
 import (
 	"sync"
 
-	"github.com/user/poker/models"
+	"github.com/Arvi89/poker-go/models"
 )
 
 // Store is a simple in-memory store for rooms

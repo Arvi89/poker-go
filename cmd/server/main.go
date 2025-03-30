@@ -2,16 +2,41 @@ package main
 
 import (
 	"log"
+	"os"
+	"strings"
 	"time"
 
+	"github.com/Arvi89/poker-go/db"
+	"github.com/Arvi89/poker-go/handlers"
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
-	"github.com/user/poker/db"
-	"github.com/user/poker/handlers"
 )
 
 func main() {
 	// Create a new Gin router
 	router := gin.Default()
+
+	// Configure CORS
+	config := cors.DefaultConfig()
+
+	// Read CORS settings from environment
+	corsOrigins := os.Getenv("CORS_ORIGINS")
+	if corsOrigins != "" {
+		// Split by comma and trim spaces
+		origins := strings.Split(corsOrigins, ",")
+		for i, origin := range origins {
+			origins[i] = strings.TrimSpace(origin)
+		}
+		config.AllowOrigins = origins
+		config.AllowAllOrigins = false
+	} else {
+		// Default origins in development
+		config.AllowAllOrigins = true
+	}
+
+	config.AllowHeaders = []string{"Origin", "Content-Type", "Accept", "Authorization"}
+	config.AllowCredentials = true
+	router.Use(cors.New(config))
 
 	// Create a new store
 	store := db.NewStore()
@@ -60,10 +85,11 @@ func main() {
 			rooms.POST("/vote", roomHandler.SubmitVote)
 			rooms.GET("/reveal", roomHandler.RevealCards)
 			rooms.GET("/reset", roomHandler.ResetVoting)
-			rooms.POST("/link", roomHandler.UpdateLink)
+			rooms.PATCH("", roomHandler.UpdateLink)
+			rooms.POST("/transfer-creator", roomHandler.TransferCreator)
 
-			// SSE endpoint for real-time updates
-			rooms.GET("/events", roomHandler.StreamEvents)
+			// WebSocket endpoint for real-time updates
+			rooms.GET("/ws", roomHandler.WebSocketHandler)
 		}
 	}
 
